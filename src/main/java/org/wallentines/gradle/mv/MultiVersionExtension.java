@@ -18,6 +18,7 @@ import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.*;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.testing.Test;
+import org.gradle.internal.impldep.org.apache.commons.lang.StringUtils;
 import org.gradle.jvm.tasks.Jar;
 import org.gradle.jvm.toolchain.JavaCompiler;
 import org.gradle.jvm.toolchain.JavaLanguageVersion;
@@ -43,13 +44,18 @@ public class MultiVersionExtension {
 
     }
 
+    public void defaultVersion(int version) {
+
+        setupVersion(version, true);
+    }
+
     public void additionalVersions(int... versions) {
         for(int i : versions) {
-            setupVersion(i);
+            setupVersion(i, false);
         }
     }
 
-    private void setupVersion(int version) {
+    private void setupVersion(int version, boolean defaultVersion) {
 
         JavaLanguageVersion javaVersion = JavaLanguageVersion.of(version);
         DependencyHandler dependencies = project.getDependencies();
@@ -66,9 +72,7 @@ public class MultiVersionExtension {
         }
 
         // Source Set
-        SourceSet java = sourceSets.create(name, set -> {
-            set.setCompileClasspath(set.getCompileClasspath().plus(mainJava.getCompileClasspath()));
-        });
+        SourceSet java = sourceSets.create(name, set -> set.setCompileClasspath(set.getCompileClasspath().plus(mainJava.getCompileClasspath())));
 
         Configuration javaImpl = configurations.getByName(java.getImplementationConfigurationName(), conf ->
                 conf.getAttributes().attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version));
@@ -78,12 +82,15 @@ public class MultiVersionExtension {
         javaImpl.getDependencies().add(dependencies.create(mainClasses));
 
         Configuration javaComp = configurations.getByName(java.getCompileOnlyConfigurationName());
+        Configuration javaRuntime = configurations.getByName(java.getRuntimeOnlyConfigurationName());
 
         Configuration mainImpl = configurations.getByName(mainJava.getImplementationConfigurationName());
         Configuration mainComp = configurations.getByName(mainJava.getCompileOnlyConfigurationName());
+        Configuration mainRuntime = configurations.getByName(mainJava.getRuntimeOnlyConfigurationName());
 
         javaImpl.extendsFrom(mainImpl);
         javaComp.extendsFrom(mainComp);
+        javaRuntime.extendsFrom(mainRuntime);
 
         // API dependencies
         Configuration javaApi = configurations.findByName(java.getApiConfigurationName());
@@ -99,59 +106,77 @@ public class MultiVersionExtension {
         Provider<JavaCompiler> targetCompiler = toolchainService.compilerFor(spec -> spec.getLanguageVersion().convention(javaVersion));
         Provider<JavaLauncher> targetLauncher = toolchainService.launcherFor(spec -> spec.getLanguageVersion().convention(javaVersion));
 
-        tasks.named(java.getCompileJavaTaskName(), JavaCompile.class, task -> {
-            task.getJavaCompiler().convention(targetCompiler);
+        if(defaultVersion) {
 
-            FileTree source = task.getSource();
-            task.setSource(source.plus(filterSources(source, mainJava.getJava(), java.getJava()).getAsFileTree()));
-        });
+            tasks.named(mainJava.getCompileJavaTaskName(), JavaCompile.class, task -> {
+                task.getJavaCompiler().convention(targetCompiler);
 
-        // Jars
-        Jar javaJarTask = tasks.create(java.getJarTaskName(), Jar.class, task -> {
-
-            task.setGroup("build");
-            task.from(java.getOutput());
-            task.getArchiveClassifier().set(name);
-
-        });
-
-        tasks.getByName("assemble").dependsOn(javaJarTask);
-
-
-        // Variant Artifacts
-        Configuration apiElements = configurations.create(java.getApiElementsConfigurationName(), conf -> { // API Elements
-            conf.setCanBeResolved(false);
-            conf.setCanBeConsumed(true);
-
-            conf.attributes(attr -> {
-                attr.attribute(Usage.USAGE_ATTRIBUTE, project.getObjects().named(Usage.class, Usage.JAVA_API));
-                attr.attribute(Category.CATEGORY_ATTRIBUTE, project.getObjects().named(Category.class, Category.LIBRARY));
-                attr.attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, project.getObjects().named(LibraryElements.class, LibraryElements.JAR));
-                attr.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version);
+                FileTree source = task.getSource();
+                task.setSource(source.plus(filterSources(source, mainJava.getJava(), java.getJava()).getAsFileTree()));
             });
 
-            conf.extendsFrom(configurations.getByName(java.getImplementationConfigurationName()));
-            conf.outgoing(pub -> pub.artifact(tasks.named(java.getJarTaskName())));
-        });
-
-        Configuration runtimeElements = configurations.create(java.getRuntimeElementsConfigurationName(), conf -> { // Runtime Elements
-            conf.setCanBeResolved(false);
-            conf.setCanBeConsumed(true);
-
-            conf.attributes(attr -> {
-                attr.attribute(Usage.USAGE_ATTRIBUTE, project.getObjects().named(Usage.class, Usage.JAVA_RUNTIME));
-                attr.attribute(Category.CATEGORY_ATTRIBUTE, project.getObjects().named(Category.class, Category.LIBRARY));
-                attr.attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, project.getObjects().named(LibraryElements.class, LibraryElements.JAR));
-                attr.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version);
+            tasks.named(mainJava.getJarTaskName(), Jar.class, task -> {
+                task.setGroup("build");
+                task.from(java.getOutput());
             });
 
-            conf.extendsFrom(configurations.getByName(java.getImplementationConfigurationName()));
-            conf.outgoing(pub -> pub.artifact(tasks.named(java.getJarTaskName())));
-        });
+        } else {
 
-        AdhocComponentWithVariants javaComponent = (AdhocComponentWithVariants) project.getComponents().getByName("java");
-        javaComponent.addVariantsFromConfiguration(apiElements, ConfigurationVariantDetails::mapToOptional);
-        javaComponent.addVariantsFromConfiguration(runtimeElements, ConfigurationVariantDetails::mapToOptional);
+            tasks.named(java.getCompileJavaTaskName(), JavaCompile.class, task -> {
+                task.getJavaCompiler().convention(targetCompiler);
+
+                FileTree source = task.getSource();
+                task.setSource(source.plus(filterSources(source, mainJava.getJava(), java.getJava()).getAsFileTree()));
+            });
+
+            // Jars
+            Jar javaJarTask = tasks.create(java.getJarTaskName(), Jar.class, task -> {
+
+                task.setGroup("build");
+                task.from(java.getOutput());
+                task.getArchiveClassifier().set(name);
+
+            });
+
+            tasks.getByName("assemble").dependsOn(javaJarTask);
+
+
+            // Variant Artifacts
+            Configuration apiElements = configurations.create(java.getApiElementsConfigurationName(), conf -> { // API Elements
+                conf.setCanBeResolved(false);
+                conf.setCanBeConsumed(true);
+
+                conf.attributes(attr -> {
+                    attr.attribute(Usage.USAGE_ATTRIBUTE, project.getObjects().named(Usage.class, Usage.JAVA_API));
+                    attr.attribute(Category.CATEGORY_ATTRIBUTE, project.getObjects().named(Category.class, Category.LIBRARY));
+                    attr.attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, project.getObjects().named(LibraryElements.class, LibraryElements.JAR));
+                    attr.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version);
+                });
+
+                conf.extendsFrom(configurations.getByName(java.getImplementationConfigurationName()));
+                conf.outgoing(pub -> pub.artifact(tasks.named(java.getJarTaskName())));
+            });
+
+            Configuration runtimeElements = configurations.create(java.getRuntimeElementsConfigurationName(), conf -> { // Runtime Elements
+                conf.setCanBeResolved(false);
+                conf.setCanBeConsumed(true);
+
+                conf.attributes(attr -> {
+                    attr.attribute(Usage.USAGE_ATTRIBUTE, project.getObjects().named(Usage.class, Usage.JAVA_RUNTIME));
+                    attr.attribute(Category.CATEGORY_ATTRIBUTE, project.getObjects().named(Category.class, Category.LIBRARY));
+                    attr.attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, project.getObjects().named(LibraryElements.class, LibraryElements.JAR));
+                    attr.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version);
+                });
+
+                conf.extendsFrom(configurations.getByName(java.getImplementationConfigurationName()));
+                conf.outgoing(pub -> pub.artifact(tasks.named(java.getJarTaskName())));
+            });
+
+            AdhocComponentWithVariants javaComponent = (AdhocComponentWithVariants) project.getComponents().getByName("java");
+            javaComponent.addVariantsFromConfiguration(apiElements, ConfigurationVariantDetails::mapToOptional);
+            javaComponent.addVariantsFromConfiguration(runtimeElements, ConfigurationVariantDetails::mapToOptional);
+
+        }
 
 
         // Tests
@@ -187,18 +212,32 @@ public class MultiVersionExtension {
             tasks.named("check", task -> task.dependsOn(testTask));
         }
 
+
         // Application
         project.getPluginManager().withPlugin("application", plugin -> {
             JavaApplication application = project.getExtensions().getByType(JavaApplication.class);
-            tasks.register(name + "Run", JavaExec.class, task -> {
-                task.setGroup(ApplicationPlugin.APPLICATION_GROUP);
-                task.getJavaLauncher().convention(targetLauncher);
-                task.getMainClass().convention(application.getMainClass());
-                task.setClasspath(java.getRuntimeClasspath());
-            });
+
+            if(defaultVersion) {
+                tasks.named("run", JavaExec.class, task -> {
+                    task.getJavaLauncher().convention(targetLauncher);
+                    task.setClasspath(java.getRuntimeClasspath());
+                });
+            } else {
+                tasks.register(name + "Run", JavaExec.class, task -> {
+                    task.setGroup(ApplicationPlugin.APPLICATION_GROUP);
+                    task.getJavaLauncher().convention(targetLauncher);
+                    task.getMainClass().convention(application.getMainClass());
+                    task.setClasspath(java.getRuntimeClasspath());
+                });
+            }
         });
 
     }
+
+    private String configurationNameOf(String sourceSet, String baseName) {
+        return StringUtils.uncapitalize(sourceSet + StringUtils.capitalize(baseName));
+    }
+
 
     private FileCollection filterSources(FileTree sources, SourceDirectorySet target, SourceDirectorySet destination) {
 

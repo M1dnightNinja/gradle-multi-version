@@ -3,7 +3,7 @@ Compile your code for multiple versions of the JVM.
 
 ## Overview
 This project is designed to allow you to compile your Java code for multiple versions of the JVM. Much of the code is 
-based on [Melix's multi-release jars](https://github.com/melix/mrjar-gradle-plugin) gradle plugin. However, this plugin
+based on [Melix's multi-release jars plugin](https://github.com/melix/mrjar-gradle-plugin) gradle plugin. However, this plugin
 does not utilize multi-release jars. Instead, it compiles the same codebase for each version of the JVM you want to
 target, and produces a single artifact for each. Note that this plugin is still in development and things will likely
 change.
