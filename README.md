@@ -10,7 +10,7 @@ likely change.
 
 ## Usage
 ### Setup
-The plugin is currently not hosted on any public maven repository. To use it, first clone the repository. Then built it
+The plugin is currently not hosted on any public maven repository. To use it, first clone the repository. Then build it
 by running `gradlew build` in its root. Then publish it to the local maven repository using 
 `gradlew publishToMavenLocal`. Then, add the local maven repository to your `settings.gradle.kts`:
 ```
