@@ -16,6 +16,7 @@ import org.gradle.api.file.SourceDirectorySet;
 import org.gradle.api.plugins.*;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.*;
+import org.gradle.api.tasks.compile.AbstractCompile;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.testing.Test;
 import org.gradle.jvm.tasks.Jar;
@@ -27,6 +28,9 @@ import org.gradle.language.base.plugins.LifecycleBasePlugin;
 
 import javax.inject.Inject;
 import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.TreeMap;
 
 public class MultiVersionExtension {
 
@@ -34,15 +38,24 @@ public class MultiVersionExtension {
     private final SourceSetContainer sourceSets;
     private final JavaToolchainService toolchainService;
 
+    private final HashMap<SourceSet, Map<Integer, SourceDirectorySet>> directorySets = new HashMap<>();
+
     private int defaultVersion = 0;
     private boolean useSourceDirectorySets = false;
     private boolean skipApiGuardianDependency = false;
 
+
+    /**
+     * Sets the flag to use source directory sets as opposed to source sets. See the README for more details
+     */
     public void useSourceDirectorySets() {
         this.useSourceDirectorySets = true;
     }
 
 
+    /**
+     * Sets the flag to skip the @API Guardian dependency for tests run on source directory sets. See the README for more details
+     */
     public void skipApiGuardianDependency() {
         this.skipApiGuardianDependency = true;
     }
@@ -106,7 +119,28 @@ public class MultiVersionExtension {
                         set.getCompileTaskName("java") :
                         getCompileTaskName(version, set)
         );
+    }
 
+    /**
+     * Gets the source directory set for the given version override on the main source set
+     * @param version The version override to lookup
+     * @return A source directory set, or null if there is no version override for the given version
+     */
+    public SourceDirectorySet getSourceDirectorySet(int version) {
+        return getSourceDirectorySet(version, sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME));
+    }
+
+
+    /**
+     * Gets the source directory set for the given version override on the given source set
+     * @param version The version override to lookup
+     * @param set The source set to look into
+     * @return A source directory set, or null if there is no version override for the given version
+     */
+    public SourceDirectorySet getSourceDirectorySet(int version, SourceSet set) {
+
+        if(!directorySets.containsKey(set)) return null;
+        return directorySets.get(set).getOrDefault(version, null);
     }
 
 
@@ -129,7 +163,7 @@ public class MultiVersionExtension {
     }
 
 
-    private void setupSourceDirectorySet(int version, String name, SourceSet mainJava, SourceSet mainTest, boolean defaultVersion) {
+    private void setupSourceDirectorySet(int version, String name, SourceSet sourceSet, SourceSet testSet, boolean defaultVersion) {
 
         JavaLanguageVersion javaVersion = JavaLanguageVersion.of(version);
         Provider<JavaLauncher> targetLauncher = toolchainService.launcherFor(spec -> spec.getLanguageVersion().convention(javaVersion));
@@ -137,30 +171,31 @@ public class MultiVersionExtension {
         TaskContainer tasks = project.getTasks();
 
         // Source Directory Set
-        SourceDirectorySet java = addSourceDirectorySet(name, version, mainJava, defaultVersion);
+        SourceDirectorySet java = addSourceDirectorySet(name, version, sourceSet, defaultVersion);
+        cacheSourceDirectorySet(sourceSet, version, java);
 
         Jar jarTask;
 
         if(defaultVersion) {
 
-            jarTask = (Jar) tasks.getByName(mainJava.getJarTaskName());
+            jarTask = (Jar) tasks.getByName(sourceSet.getJarTaskName());
 
         } else {
             // Jar
-            jarTask = tasks.register(getJarTaskName(version, mainJava), Jar.class, task -> {
+            jarTask = tasks.register(getJarTaskName(version, sourceSet), Jar.class, task -> {
                 task.setGroup("build");
-                task.dependsOn(tasks.getByName(getClassesTaskName(version, mainJava)));
-                task.dependsOn(tasks.getByName(mainJava.getProcessResourcesTaskName()));
+                task.dependsOn(tasks.getByName(getClassesTaskName(version, sourceSet)));
+                task.dependsOn(tasks.getByName(sourceSet.getProcessResourcesTaskName()));
                 task.getArchiveClassifier().set(name);
-                task.from(java.getDestinationDirectory().get().getAsFile(), mainJava.getOutput().getResourcesDir());
+                task.from(java.getDestinationDirectory().get().getAsFile(), sourceSet.getOutput().getResourcesDir());
             }).get();
             tasks.getByName("assemble").dependsOn(jarTask);
 
-            Configuration implementation = configurations.getByName(configurationNameOf(mainJava.getImplementationConfigurationName(), version));
+            Configuration implementation = configurations.getByName(configurationNameOf(sourceSet.getImplementationConfigurationName(), version));
 
             // Variant Artifacts
-            Configuration apiElements = configurations.create(configurationNameOf(mainJava.getApiElementsConfigurationName(), version), conf -> setupElementsConfig(conf, Usage.JAVA_API, implementation, jarTask, version));
-            Configuration runtimeElements = configurations.create(configurationNameOf(mainJava.getRuntimeElementsConfigurationName(), version), conf -> setupElementsConfig(conf, Usage.JAVA_RUNTIME, implementation, jarTask, version));
+            Configuration apiElements = configurations.create(configurationNameOf(sourceSet.getApiElementsConfigurationName(), version), conf -> setupElementsConfig(conf, Usage.JAVA_API, implementation, jarTask, version));
+            Configuration runtimeElements = configurations.create(configurationNameOf(sourceSet.getRuntimeElementsConfigurationName(), version), conf -> setupElementsConfig(conf, Usage.JAVA_RUNTIME, implementation, jarTask, version));
 
             AdhocComponentWithVariants javaComponent = (AdhocComponentWithVariants) project.getComponents().getByName("java");
             javaComponent.addVariantsFromConfiguration(apiElements, ConfigurationVariantDetails::mapToOptional);
@@ -172,7 +207,7 @@ public class MultiVersionExtension {
         project.getPluginManager().withPlugin("application", plugin -> {
 
             JavaApplication application = project.getExtensions().getByType(JavaApplication.class);
-            FileCollection runtimeClasspath = configurations.getByName(configurationNameOf(mainJava.getRuntimeClasspathConfigurationName(), version)).plus(project.files(java.getDestinationDirectory()));
+            FileCollection runtimeClasspath = configurations.getByName(configurationNameOf(sourceSet.getRuntimeClasspathConfigurationName(), version)).plus(project.files(java.getDestinationDirectory()));
             JavaPluginExtension javaExtension = project.getExtensions().getByType(JavaPluginExtension.class);
 
             if(defaultVersion) {
@@ -194,14 +229,16 @@ public class MultiVersionExtension {
 
 
         // Tests
-        addSourceDirectorySet(name, version, mainTest, defaultVersion);
-        Configuration testImplementation = configurations.getByName(configurationNameOf(mainTest.getImplementationConfigurationName(), version));
-        Configuration testCompileOnly = configurations.getByName(configurationNameOf(mainTest.getCompileOnlyConfigurationName(), version));
+        SourceDirectorySet test = addSourceDirectorySet(name, version, testSet, defaultVersion);
+        cacheSourceDirectorySet(testSet, version, test);
+
+        Configuration testImplementation = configurations.getByName(configurationNameOf(testSet.getImplementationConfigurationName(), version));
+        Configuration testCompileOnly = configurations.getByName(configurationNameOf(testSet.getCompileOnlyConfigurationName(), version));
 
         DependencyHandler dependencies = project.getDependencies();
 
-        testImplementation.extendsFrom(configurations.getByName(configurationNameOf(mainJava.getImplementationConfigurationName(), version)));
-        testCompileOnly.extendsFrom(configurations.getByName(configurationNameOf(mainJava.getCompileOnlyConfigurationName(), version)));
+        testImplementation.extendsFrom(configurations.getByName(configurationNameOf(sourceSet.getImplementationConfigurationName(), version)));
+        testCompileOnly.extendsFrom(configurations.getByName(configurationNameOf(sourceSet.getCompileOnlyConfigurationName(), version)));
 
         if(!skipApiGuardianDependency) {
             // Add @API Guardian to prevent warnings during tests. (https://github.com/apiguardian-team/apiguardian)
@@ -210,17 +247,17 @@ public class MultiVersionExtension {
 
         if(!defaultVersion) {
 
-            Configuration testCompileClasspath = configurations.getByName(configurationNameOf(mainTest.getCompileClasspathConfigurationName(), version));
-            Configuration testRuntimeClasspath = configurations.getByName(configurationNameOf(mainTest.getRuntimeClasspathConfigurationName(), version));
+            Configuration testCompileClasspath = configurations.getByName(configurationNameOf(testSet.getCompileClasspathConfigurationName(), version));
+            Configuration testRuntimeClasspath = configurations.getByName(configurationNameOf(testSet.getRuntimeClasspathConfigurationName(), version));
 
-            JavaCompile testCompile = getCompileTask(version, mainTest);
+            JavaCompile testCompile = getCompileTask(version, testSet);
             testCompile.setClasspath(project.getObjects().fileCollection().from(testCompileClasspath, project.files(java.getDestinationDirectory())));
-            testCompile.dependsOn(getCompileTask(version, mainJava));
+            testCompile.dependsOn(getCompileTask(version, sourceSet));
 
             TaskProvider<Test> testTask = tasks.register(name + "Test", Test.class, task -> {
                 task.setGroup(LifecycleBasePlugin.VERIFICATION_GROUP);
                 task.getJavaLauncher().convention(targetLauncher);
-                task.dependsOn(tasks.getByName(getClassesTaskName(version, mainTest)));
+                task.dependsOn(tasks.getByName(getClassesTaskName(version, testSet)));
 
                 task.setClasspath(project.getObjects().fileCollection().from(testCompile.getDestinationDirectory().getAsFile().get(), java.getDestinationDirectory().getAsFile().get(), testRuntimeClasspath));
             });
@@ -228,7 +265,6 @@ public class MultiVersionExtension {
             tasks.named("check", task -> task.dependsOn(testTask));
 
         }
-
     }
 
     private SourceDirectorySet addSourceDirectorySet(String name, int version, SourceSet parent, boolean defaultVersion) {
@@ -301,6 +337,7 @@ public class MultiVersionExtension {
                 task.getDestinationDirectory().convention(java.getDestinationDirectory());
 
             });
+            java.compiledBy(compileTask, AbstractCompile::getDestinationDirectory);
 
             // Register
             parent.getAllJava().source(java);
@@ -312,7 +349,8 @@ public class MultiVersionExtension {
         return java;
     }
 
-    private void setupSourceSet(int version, String name, SourceSet mainJava, SourceSet mainTest, boolean defaultVersion) {
+
+    private void setupSourceSet(int version, String name, SourceSet sourceSet, SourceSet testSet, boolean defaultVersion) {
 
         JavaLanguageVersion javaVersion = JavaLanguageVersion.of(version);
         DependencyHandler dependencies = project.getDependencies();
@@ -320,7 +358,8 @@ public class MultiVersionExtension {
         TaskContainer tasks = project.getTasks();
 
         // Source Set
-        SourceSet java = sourceSets.create(name, set -> set.setCompileClasspath(set.getCompileClasspath().plus(mainJava.getCompileClasspath())));
+        SourceSet java = sourceSets.create(name, set -> set.setCompileClasspath(set.getCompileClasspath().plus(sourceSet.getCompileClasspath())));
+        cacheSourceDirectorySet(sourceSet, version, java.getJava());
 
         Configuration javaImpl = configurations.getByName(java.getImplementationConfigurationName(), conf ->
                 conf.getAttributes().attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version));
@@ -332,9 +371,9 @@ public class MultiVersionExtension {
         Configuration javaComp = configurations.getByName(java.getCompileOnlyConfigurationName());
         Configuration javaRuntime = configurations.getByName(java.getRuntimeOnlyConfigurationName());
 
-        Configuration mainImpl = configurations.getByName(mainJava.getImplementationConfigurationName());
-        Configuration mainComp = configurations.getByName(mainJava.getCompileOnlyConfigurationName());
-        Configuration mainRuntime = configurations.getByName(mainJava.getRuntimeOnlyConfigurationName());
+        Configuration mainImpl = configurations.getByName(sourceSet.getImplementationConfigurationName());
+        Configuration mainComp = configurations.getByName(sourceSet.getCompileOnlyConfigurationName());
+        Configuration mainRuntime = configurations.getByName(sourceSet.getRuntimeOnlyConfigurationName());
 
         javaImpl.extendsFrom(mainImpl);
         javaComp.extendsFrom(mainComp);
@@ -344,8 +383,8 @@ public class MultiVersionExtension {
         Configuration javaApi = configurations.findByName(java.getApiConfigurationName());
         if(javaApi != null) {
             Configuration javaApiComp = configurations.getByName(java.getCompileOnlyApiConfigurationName());
-            Configuration mainApi = configurations.getByName(mainJava.getApiConfigurationName());
-            Configuration mainApiComp = configurations.getByName(mainJava.getCompileOnlyApiConfigurationName());
+            Configuration mainApi = configurations.getByName(sourceSet.getApiConfigurationName());
+            Configuration mainApiComp = configurations.getByName(sourceSet.getCompileOnlyApiConfigurationName());
             javaApi.extendsFrom(mainApi);
             javaApiComp.extendsFrom(mainApiComp);
         }
@@ -358,19 +397,19 @@ public class MultiVersionExtension {
 
         if(defaultVersion) {
 
-            tasks.named(mainJava.getCompileJavaTaskName(), JavaCompile.class, task -> {
+            tasks.named(sourceSet.getCompileJavaTaskName(), JavaCompile.class, task -> {
                 task.getJavaCompiler().convention(targetCompiler);
 
                 FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, mainJava.getJava(), java.getJava()).getAsFileTree()));
+                task.setSource(source.plus(filterSources(source, sourceSet.getJava(), java.getJava()).getAsFileTree()));
             });
 
-            tasks.named(mainJava.getJarTaskName(), Jar.class, task -> {
+            tasks.named(sourceSet.getJarTaskName(), Jar.class, task -> {
                 task.setGroup("build");
                 task.from(java.getOutput());
             });
 
-            jarTask = (Jar) tasks.getByName(mainJava.getJarTaskName());
+            jarTask = (Jar) tasks.getByName(sourceSet.getJarTaskName());
 
         } else {
 
@@ -378,15 +417,15 @@ public class MultiVersionExtension {
                 task.getJavaCompiler().convention(targetCompiler);
 
                 FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, mainJava.getJava(), java.getJava()).getAsFileTree()));
+                task.setSource(source.plus(filterSources(source, sourceSet.getJava(), java.getJava()).getAsFileTree()));
             });
 
             // Jars
             jarTask = tasks.create(java.getJarTaskName(), Jar.class, task -> {
 
                 task.setGroup("build");
-                task.dependsOn(mainJava.getProcessResourcesTaskName());
-                task.from(java.getOutput(), mainJava.getOutput().getResourcesDir());
+                task.dependsOn(sourceSet.getProcessResourcesTaskName());
+                task.from(java.getOutput(), sourceSet.getOutput().getResourcesDir());
                 task.getArchiveClassifier().set(name);
 
             });
@@ -427,15 +466,16 @@ public class MultiVersionExtension {
         });
 
         // Tests
-        if(mainTest != null) {
+        if(testSet != null) {
 
             SourceSet test = sourceSets.create(name + "Test");
+            cacheSourceDirectorySet(testSet, version, test.getJava());
 
             JavaCompile compileTask = tasks.named(test.getCompileJavaTaskName(), JavaCompile.class, task -> {
                 task.getJavaCompiler().convention(targetCompiler);
 
                 FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, mainTest.getJava(), test.getJava()).getAsFileTree()));
+                task.setSource(source.plus(filterSources(source, testSet.getJava(), test.getJava()).getAsFileTree()));
             }).get();
 
 
@@ -443,14 +483,14 @@ public class MultiVersionExtension {
             Configuration testComp = configurations.getByName(test.getCompileOnlyConfigurationName());
             Configuration testRuntimeClasspath = configurations.getByName(test.getRuntimeClasspathConfigurationName());
 
-            Configuration mainTestImpl = configurations.getByName(mainTest.getImplementationConfigurationName());
-            Configuration mainTestComp = configurations.getByName(mainTest.getCompileOnlyConfigurationName());
+            Configuration mainTestImpl = configurations.getByName(testSet.getImplementationConfigurationName());
+            Configuration mainTestComp = configurations.getByName(testSet.getCompileOnlyConfigurationName());
 
             testImpl.extendsFrom(mainTestImpl);
             testComp.extendsFrom(mainTestComp);
 
             testImpl.getDependencies().add(dependencies.create(java.getOutput().getClassesDirs()));
-            testImpl.getDependencies().add(dependencies.create(mainJava.getOutput().getClassesDirs()));
+            testImpl.getDependencies().add(dependencies.create(sourceSet.getOutput().getClassesDirs()));
 
             TaskProvider<Test> testTask = tasks.register(name + "Test", Test.class, task -> {
                 task.setGroup(LifecycleBasePlugin.VERIFICATION_GROUP);
@@ -462,6 +502,21 @@ public class MultiVersionExtension {
         }
     }
 
+
+    private void cacheSourceDirectorySet(SourceSet set, int version, SourceDirectorySet value) {
+
+        directorySets.compute(set, (k,v) -> {
+            if(v == null) v = new TreeMap<>();
+            if(v.containsKey(version)) {
+                throw new IllegalStateException("Attempt to overwrite source directory set for version " + version + " on source set " + set.getName());
+            }
+            v.put(version, value);
+            return v;
+        });
+
+    }
+
+
     private FileCollection getRuntimeClasspath(JavaExec task, Jar jarTask, FileCollection runtimeClasspath) {
         return project.files().from(
                 (task.getMainModule().isPresent() ?
@@ -469,6 +524,7 @@ public class MultiVersionExtension {
                         runtimeClasspath)
         );
     }
+
 
     private void setupElementsConfig(Configuration element, String usage, Configuration implementation, Jar jar, int version) {
 
@@ -489,26 +545,32 @@ public class MultiVersionExtension {
         element.outgoing(pub -> pub.artifact(tasks.named(jar.getName())));
     }
 
+
     private static String getCompileTaskName(int version, SourceSet base) {
         return base.getCompileTaskName("java") + version;
     }
+
 
     private static String getJarTaskName(int version, SourceSet base) {
         return "java" + version + capitalize(base.getJarTaskName());
     }
 
+
     private static String getClassesTaskName(int version, SourceSet base) {
         return "java" + version + capitalize(base.getClassesTaskName() );
     }
+
 
     private static String configurationNameOf(String configuration, int version) {
         return "java" + version + capitalize(configuration);
     }
 
+
     private static String capitalize(String other) {
         if(other == null || other.isEmpty()) return other;
-        return other.substring(0,1).toUpperCase() + other.substring(1);
+        return Character.toTitleCase(other.charAt(0)) + other.substring(1);
     }
+
 
     private Configuration registerConfiguration(String name, int version, boolean extend) {
 
@@ -520,6 +582,7 @@ public class MultiVersionExtension {
         setupConfiguration(out, base, extend, version);
         return out;
     }
+
 
     private Configuration maybeRegisterConfiguration(String name, int version) {
 
@@ -533,6 +596,7 @@ public class MultiVersionExtension {
 
         return null;
     }
+
 
     private void setupConfiguration(Configuration config, Configuration base, boolean extend, int version) {
 

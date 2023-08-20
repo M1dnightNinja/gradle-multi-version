@@ -89,7 +89,7 @@ lead to a cleaner codebase, but with a couple drawbacks. For starters, there are
 created, so if you need to add additional resources to your versioned jars, this will not be possible with this method.
 Additionally, adding source directory sets does not appear to play nicely with IntelliJ IDEA. If you override any class
 files in other source directory sets, IDEA will complain about duplicate classes. This does not affect compilation or
-packaging, but may be kind of annoying, which would defeat the purpose of using source directory sets in the first
+packaging, but it may be kind of annoying, which would defeat the purpose of using source directory sets in the first
 place.
 
 
