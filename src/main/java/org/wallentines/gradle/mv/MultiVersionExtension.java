@@ -10,10 +10,13 @@ import org.gradle.api.attributes.Usage;
 import org.gradle.api.attributes.java.TargetJvmVersion;
 import org.gradle.api.component.AdhocComponentWithVariants;
 import org.gradle.api.component.ConfigurationVariantDetails;
+import org.gradle.api.file.DuplicatesStrategy;
 import org.gradle.api.file.FileCollection;
 import org.gradle.api.file.FileTree;
 import org.gradle.api.file.SourceDirectorySet;
-import org.gradle.api.plugins.*;
+import org.gradle.api.plugins.ApplicationPlugin;
+import org.gradle.api.plugins.JavaApplication;
+import org.gradle.api.plugins.JavaPluginExtension;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.*;
 import org.gradle.api.tasks.compile.AbstractCompile;
@@ -310,7 +313,7 @@ public class MultiVersionExtension {
                 task.getJavaCompiler().convention(targetCompiler);
 
                 FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, parent.getJava(), java).getAsFileTree()));
+                task.setSource(java.getSourceDirectories().plus(filterSources(source, parent.getJava(), java).getAsFileTree()));
             });
             java.getDestinationDirectory().convention(parent.getJava().getDestinationDirectory());
 
@@ -322,7 +325,7 @@ public class MultiVersionExtension {
 
             TaskProvider<JavaCompile> compileTask = tasks.register(getCompileTaskName(version, parent), JavaCompile.class, (task) -> {
 
-                task.setSource(java.getSourceDirectories().plus(filterSources(java.getSourceDirectories().getAsFileTree(), parent.getJava(), java)));
+                task.setSource(java.getSourceDirectories().plus(filterSources(parent.getJava().getSourceDirectories(), parent.getJava(), java)));
 
                 task.getJavaCompiler().convention(targetCompiler);
                 task.setClasspath(compileClasspath);
@@ -365,9 +368,6 @@ public class MultiVersionExtension {
                 conf.getAttributes().attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version));
 
         // Dependencies
-        FileCollection mainClasses = project.getObjects().fileCollection().from(sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME).getOutput().getClassesDirs());
-        javaImpl.getDependencies().add(dependencies.create(mainClasses));
-
         Configuration javaComp = configurations.getByName(java.getCompileOnlyConfigurationName());
         Configuration javaRuntime = configurations.getByName(java.getRuntimeOnlyConfigurationName());
 
@@ -395,37 +395,34 @@ public class MultiVersionExtension {
 
         Jar jarTask;
 
+
+        TaskProvider<JavaCompile> compileTask = tasks.named(java.getCompileJavaTaskName(), JavaCompile.class, task -> {
+            task.getJavaCompiler().convention(targetCompiler);
+
+            FileTree source = task.getSource();
+            task.setSource(source.plus(filterSources(sourceSet.getJava().getSourceDirectories().getAsFileTree(), sourceSet.getJava(), java.getJava())).getAsFileTree());
+        });
+
         if(defaultVersion) {
 
-            tasks.named(sourceSet.getCompileJavaTaskName(), JavaCompile.class, task -> {
-                task.getJavaCompiler().convention(targetCompiler);
-
-                FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, sourceSet.getJava(), java.getJava()).getAsFileTree()));
-            });
-
             tasks.named(sourceSet.getJarTaskName(), Jar.class, task -> {
-                task.setGroup("build");
-                task.from(java.getOutput());
+                task.dependsOn(compileTask);
+                task.from(java.getJava().getDestinationDirectory(), java.getOutput().getResourcesDir(), sourceSet.getOutput().getResourcesDir());
+
+                task.setDuplicatesStrategy(DuplicatesStrategy.EXCLUDE);
             });
 
             jarTask = (Jar) tasks.getByName(sourceSet.getJarTaskName());
 
         } else {
 
-            tasks.named(java.getCompileJavaTaskName(), JavaCompile.class, task -> {
-                task.getJavaCompiler().convention(targetCompiler);
-
-                FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, sourceSet.getJava(), java.getJava()).getAsFileTree()));
-            });
-
             // Jars
             jarTask = tasks.create(java.getJarTaskName(), Jar.class, task -> {
 
                 task.setGroup("build");
                 task.dependsOn(sourceSet.getProcessResourcesTaskName());
-                task.from(java.getOutput(), sourceSet.getOutput().getResourcesDir());
+                task.dependsOn(compileTask);
+                task.from(java.getJava().getDestinationDirectory(), java.getOutput().getResourcesDir(), sourceSet.getOutput().getResourcesDir());
                 task.getArchiveClassifier().set(name);
 
             });
@@ -471,11 +468,11 @@ public class MultiVersionExtension {
             SourceSet test = sourceSets.create(name + "Test");
             cacheSourceDirectorySet(testSet, version, test.getJava());
 
-            JavaCompile compileTask = tasks.named(test.getCompileJavaTaskName(), JavaCompile.class, task -> {
+            JavaCompile testCompileTask = tasks.named(test.getCompileJavaTaskName(), JavaCompile.class, task -> {
                 task.getJavaCompiler().convention(targetCompiler);
 
                 FileTree source = task.getSource();
-                task.setSource(source.plus(filterSources(source, testSet.getJava(), test.getJava()).getAsFileTree()));
+                task.setSource(source.plus(filterSources(testSet.getJava().getSourceDirectories().getAsFileTree(), testSet.getJava(), test.getJava()).getAsFileTree()));
             }).get();
 
 
@@ -495,7 +492,7 @@ public class MultiVersionExtension {
             TaskProvider<Test> testTask = tasks.register(name + "Test", Test.class, task -> {
                 task.setGroup(LifecycleBasePlugin.VERIFICATION_GROUP);
                 task.getJavaLauncher().convention(targetLauncher);
-                task.setClasspath(project.getObjects().fileCollection().from(compileTask.getDestinationDirectory(), java.getOutput(), testRuntimeClasspath));
+                task.setClasspath(project.getObjects().fileCollection().from(testCompileTask.getDestinationDirectory(), java.getOutput(), testRuntimeClasspath));
             });
 
             tasks.named("check", task -> task.dependsOn(testTask));
@@ -547,7 +544,7 @@ public class MultiVersionExtension {
 
 
     private static String getCompileTaskName(int version, SourceSet base) {
-        return base.getCompileTaskName("java") + version;
+        return base.getCompileTaskName("java") + version + "Java";
     }
 
 
@@ -607,22 +604,22 @@ public class MultiVersionExtension {
     }
 
 
-    private FileCollection filterSources(FileTree sources, SourceDirectorySet target, SourceDirectorySet destination) {
+    private FileCollection filterSources(FileCollection sources, SourceDirectorySet sourceDirectories, SourceDirectorySet overrides) {
 
-        return target.filter(file -> {
+        return sources.filter(file -> {
 
-            for (File destDir : destination.getSourceDirectories()) {
-                for (File dir : target.getSourceDirectories()) {
+            for (File overrideDir : overrides.getSourceDirectories()) {
+                for (File sourceDir : sourceDirectories.getSourceDirectories()) {
 
-                    String targetPath = dir.getAbsolutePath();
-                    String destPath = destDir.getAbsolutePath();
+                    String overridePath = overrideDir.getAbsolutePath();
+                    String sourcePath = sourceDir.getAbsolutePath();
 
-                    if(!file.getAbsolutePath().startsWith(targetPath)) continue;
+                    if(!file.getAbsolutePath().startsWith(sourcePath)) continue;
 
-                    String suffix = file.getAbsolutePath().substring(targetPath.length());
-                    File existing = new File(destPath + suffix);
+                    String suffix = file.getAbsolutePath().substring(sourcePath.length());
+                    File existing = new File(overridePath + suffix);
 
-                    if (sources.contains(existing)) {
+                    if (overrides.contains(existing)) {
                         return false;
                     }
                 }
