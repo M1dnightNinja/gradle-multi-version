@@ -130,9 +130,9 @@ public class MultiVersionExtension {
      * @return A reference to the jar task for that version
      * @throws org.gradle.api.UnknownDomainObjectException If there is no jar task for the given version
      */
-    public JavaCompile getJarTask(int version) {
+    public Jar getJarTask(int version) {
 
-        return getCompileTask(version, sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME));
+        return getJarTask(version, sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME));
     }
 
     /**
@@ -142,9 +142,9 @@ public class MultiVersionExtension {
      * @return A reference to the jar task for that version
      * @throws org.gradle.api.UnknownDomainObjectException If there is no jar task for the given version
      */
-    public JavaCompile getJarTask(int version, SourceSet set) {
+    public Jar getJarTask(int version, SourceSet set) {
 
-        return (JavaCompile) project.getTasks().getByName(
+        return (Jar) project.getTasks().getByName(
                 defaultVersion == version ?
                         set.getJarTaskName() :
                         getJarTaskName(version, set)
