@@ -125,6 +125,44 @@ public class MultiVersionExtension {
     }
 
     /**
+     * Gets the jar task for the given version within the main source set
+     * @param version The version to lookup
+     * @return A reference to the jar task for that version
+     * @throws org.gradle.api.UnknownDomainObjectException If there is no jar task for the given version
+     */
+    public JavaCompile getJarTask(int version) {
+
+        return getCompileTask(version, sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME));
+    }
+
+    /**
+     * Gets the jar task for the given within the given source set
+     * @param version The version to lookup
+     * @param set The source set to look into.
+     * @return A reference to the jar task for that version
+     * @throws org.gradle.api.UnknownDomainObjectException If there is no jar task for the given version
+     */
+    public JavaCompile getJarTask(int version, SourceSet set) {
+
+        return (JavaCompile) project.getTasks().getByName(
+                defaultVersion == version ?
+                        set.getJarTaskName() :
+                        getJarTaskName(version, set)
+        );
+    }
+
+
+    /**
+     * Gets the source directory set for the given version override on the main source set
+     * @param version The version override to lookup
+     * @return A source directory set, or null if there is no version override for the given version
+     */
+    public SourceSet getSourceSet(int version) {
+
+        return sourceSets.getByName(getSourceSetName(version));
+    }
+
+    /**
      * Gets the source directory set for the given version override on the main source set
      * @param version The version override to lookup
      * @return A source directory set, or null if there is no version override for the given version
@@ -149,7 +187,7 @@ public class MultiVersionExtension {
 
     private void setupVersion(int version, boolean defaultVersion) {
 
-        String name = "java" + version;
+        String name = getSourceSetName(version);
         SourceSet mainJava = sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME);
         SourceSet mainTest = sourceSets.findByName(SourceSet.TEST_SOURCE_SET_NAME);
 
@@ -545,6 +583,11 @@ public class MultiVersionExtension {
 
     private static String getCompileTaskName(int version, SourceSet base) {
         return base.getCompileTaskName("java") + version + "Java";
+    }
+
+
+    private static String getSourceSetName(int version) {
+        return "java" + version;
     }
 
 
