@@ -46,6 +46,7 @@ public class MultiVersionExtension {
     private int defaultVersion = 0;
     private boolean useSourceDirectorySets = false;
     private boolean skipApiGuardianDependency = false;
+    private boolean noExtend = false;
 
 
     /**
@@ -63,6 +64,22 @@ public class MultiVersionExtension {
         this.skipApiGuardianDependency = true;
     }
 
+
+    /**
+     * Sets the flag to not make the version-specific configurations extend from the default configurations (implementation, compileOnly, etc.)
+     */
+    public void noExtend() {
+        this.noExtend = true;
+    }
+
+
+    /**
+     * Gets the default java version
+     * @return The default java version
+     */
+    public int getDefaultVersion() {
+        return defaultVersion;
+    }
 
     @Inject
     public MultiVersionExtension(Project project, JavaToolchainService toolchainService) {
@@ -325,20 +342,19 @@ public class MultiVersionExtension {
 
         Configuration compileClasspath = registerConfiguration(parent.getCompileClasspathConfigurationName(), version, false);
 
-        compileClasspath.extendsFrom(compileOnly, implementation);
-
         Configuration annotationProcessor = registerConfiguration(parent.getAnnotationProcessorConfigurationName(), version, true);
         Configuration runtimeClasspath = registerConfiguration(parent.getRuntimeClasspathConfigurationName(), version, false);
 
+        compileClasspath.extendsFrom(compileOnly, implementation);
         runtimeClasspath.extendsFrom(runtimeOnly, implementation);
 
         Configuration api = maybeRegisterConfiguration(parent.getApiConfigurationName(), version);
         Configuration compileOnlyApi = maybeRegisterConfiguration(parent.getCompileOnlyApiConfigurationName(), version);
 
-        if(api != null) {
+        if (api != null) {
             implementation.extendsFrom(api);
         }
-        if(compileOnlyApi != null) {
+        if (compileOnlyApi != null) {
             compileOnly.extendsFrom(api);
         }
 
@@ -399,33 +415,39 @@ public class MultiVersionExtension {
         TaskContainer tasks = project.getTasks();
 
         // Source Set
-        SourceSet java = sourceSets.create(name, set -> set.setCompileClasspath(set.getCompileClasspath().plus(sourceSet.getCompileClasspath())));
+        SourceSet java = sourceSets.create(name, set -> {
+            if(defaultVersion) sourceSet.setCompileClasspath(sourceSet.getCompileClasspath().plus(set.getCompileClasspath()));
+        });
         cacheSourceDirectorySet(sourceSet, version, java.getJava());
 
         Configuration javaImpl = configurations.getByName(java.getImplementationConfigurationName(), conf ->
                 conf.getAttributes().attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, version));
 
         // Dependencies
-        Configuration javaComp = configurations.getByName(java.getCompileOnlyConfigurationName());
-        Configuration javaRuntime = configurations.getByName(java.getRuntimeOnlyConfigurationName());
+        if(!noExtend) {
+            Configuration javaComp = configurations.getByName(java.getCompileOnlyConfigurationName());
+            Configuration javaRuntime = configurations.getByName(java.getRuntimeOnlyConfigurationName());
 
-        Configuration mainImpl = configurations.getByName(sourceSet.getImplementationConfigurationName());
-        Configuration mainComp = configurations.getByName(sourceSet.getCompileOnlyConfigurationName());
-        Configuration mainRuntime = configurations.getByName(sourceSet.getRuntimeOnlyConfigurationName());
+            Configuration mainImpl = configurations.getByName(sourceSet.getImplementationConfigurationName());
+            Configuration mainComp = configurations.getByName(sourceSet.getCompileOnlyConfigurationName());
+            Configuration mainRuntime = configurations.getByName(sourceSet.getRuntimeOnlyConfigurationName());
 
-        javaImpl.extendsFrom(mainImpl);
-        javaComp.extendsFrom(mainComp);
-        javaRuntime.extendsFrom(mainRuntime);
 
-        // API dependencies
-        Configuration javaApi = configurations.findByName(java.getApiConfigurationName());
-        if(javaApi != null) {
-            Configuration javaApiComp = configurations.getByName(java.getCompileOnlyApiConfigurationName());
-            Configuration mainApi = configurations.getByName(sourceSet.getApiConfigurationName());
-            Configuration mainApiComp = configurations.getByName(sourceSet.getCompileOnlyApiConfigurationName());
-            javaApi.extendsFrom(mainApi);
-            javaApiComp.extendsFrom(mainApiComp);
+            javaImpl.extendsFrom(mainImpl);
+            javaComp.extendsFrom(mainComp);
+            javaRuntime.extendsFrom(mainRuntime);
+
+            // API dependencies
+            Configuration javaApi = configurations.findByName(java.getApiConfigurationName());
+            if (javaApi != null) {
+                Configuration javaApiComp = configurations.getByName(java.getCompileOnlyApiConfigurationName());
+                Configuration mainApi = configurations.getByName(sourceSet.getApiConfigurationName());
+                Configuration mainApiComp = configurations.getByName(sourceSet.getCompileOnlyApiConfigurationName());
+                javaApi.extendsFrom(mainApi);
+                javaApiComp.extendsFrom(mainApiComp);
+            }
         }
+
 
         // Compilation
         Provider<JavaCompiler> targetCompiler = toolchainService.compilerFor(spec -> spec.getLanguageVersion().convention(javaVersion));
@@ -521,8 +543,10 @@ public class MultiVersionExtension {
             Configuration mainTestImpl = configurations.getByName(testSet.getImplementationConfigurationName());
             Configuration mainTestComp = configurations.getByName(testSet.getCompileOnlyConfigurationName());
 
-            testImpl.extendsFrom(mainTestImpl);
-            testComp.extendsFrom(mainTestComp);
+            if(!noExtend) {
+                testImpl.extendsFrom(mainTestImpl);
+                testComp.extendsFrom(mainTestComp);
+            }
 
             testImpl.getDependencies().add(dependencies.create(java.getOutput().getClassesDirs()));
             testImpl.getDependencies().add(dependencies.create(sourceSet.getOutput().getClassesDirs()));
